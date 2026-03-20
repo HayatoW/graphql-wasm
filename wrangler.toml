@@ -1,0 +1,14 @@
+name = "todo-graphql-worker"
+main = "build/index.js"
+compatibility_date = "2025-03-01"
+
+[build]
+command = "worker-build --release"
+
+[build.upload]
+dir = "build"
+format = "modules"
+
+[[build.upload.rules]]
+globs = ["**/*.wasm"]
+type = "CompiledWasm"
