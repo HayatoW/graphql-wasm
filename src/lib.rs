@@ -228,7 +228,7 @@ async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumR
     if operation_is_subscription(&gql_request) {
         if !is_accept_multipart_mixed(accept) {
             return cors_error(
-                StatusCode::OK,
+                StatusCode::NOT_ACCEPTABLE,
                 "サブスクリプションは Accept: multipart/mixed; boundary=\"graphql\"; subscriptionSpec=\"1.0\" が必要です",
             );
         }
