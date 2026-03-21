@@ -1,5 +1,5 @@
 [package]
-name = "todo-graphql-worker"
+name = "graphql-wasm"
 version = "0.1.0"
 edition = "2021"
 description = "Cloudflare Workers 上の Axum + async-graphql ToDo API (WASM)"

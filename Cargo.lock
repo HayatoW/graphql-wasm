@@ -363,6 +363,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphql-wasm"
+version = "0.1.0"
+dependencies = [
+ "async-graphql",
+ "async-graphql-parser",
+ "async-graphql-value",
+ "axum",
+ "futures-util",
+ "http 1.4.0",
+ "serde",
+ "serde_json",
+ "tower-service",
+ "worker",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -946,22 +962,6 @@ checksum = "42d3e9c45c09de15d06dd8acf5f4e0e399e85927b7f00711024eb7ae10fa4869"
 dependencies = [
  "displaydoc",
  "zerovec",
-]
-
-[[package]]
-name = "todo-graphql-worker"
-version = "0.1.0"
-dependencies = [
- "async-graphql",
- "async-graphql-parser",
- "async-graphql-value",
- "axum",
- "futures-util",
- "http 1.4.0",
- "serde",
- "serde_json",
- "tower-service",
- "worker",
 ]
 
 [[package]]

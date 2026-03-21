@@ -1,4 +1,4 @@
-# todo-graphql-worker
+# graphql-wasm
 
 Cloudflare Workers にデプロイ可能な **Rust / WASM** の GraphQL API です。ルーティングは **Axum** (`default-features = false`、Tokio ランタイム機能なし)、スキーマは **async-graphql** です。
 

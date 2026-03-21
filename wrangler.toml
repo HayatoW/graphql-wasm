@@ -1,4 +1,4 @@
-name = "todo-graphql-worker"
+name = "graphql-wasm"
 main = "build/index.js"
 compatibility_date = "2025-03-01"
 
