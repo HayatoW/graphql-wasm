@@ -147,7 +147,7 @@ fn apply_cors<B>(mut res: AxumResponse<B>) -> AxumResponse<B> {
     );
     res.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
-        HeaderValue::from_static("GET,POST,OPTIONS"),
+        HeaderValue::from_static("GET,HEAD,POST,OPTIONS"),
     );
     res.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
@@ -156,18 +156,23 @@ fn apply_cors<B>(mut res: AxumResponse<B>) -> AxumResponse<B> {
     res
 }
 
-fn cors_error(status: StatusCode, msg: impl Into<String>) -> AxumResponse<Body> {
-    let body = async_graphql::Response::from_errors(vec![async_graphql::ServerError::new(
-        msg.into(),
-        None,
-    )]);
-    let json = serde_json::to_vec(&body)
-        .unwrap_or_else(|_| b"{\"errors\":[{\"message\":\"internal\"}]}".to_vec());
+fn cors_error(status: StatusCode, msg: impl Into<String>, head_request: bool) -> AxumResponse<Body> {
+    let body = if head_request {
+        Body::empty()
+    } else {
+        let gql = async_graphql::Response::from_errors(vec![async_graphql::ServerError::new(
+            msg.into(),
+            None,
+        )]);
+        let json = serde_json::to_vec(&gql)
+            .unwrap_or_else(|_| b"{\"errors\":[{\"message\":\"internal\"}]}".to_vec());
+        Body::from(json)
+    };
     apply_cors(
         AxumResponse::builder()
             .status(status)
             .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(json))
+            .body(body)
             .unwrap(),
     )
 }
@@ -184,6 +189,7 @@ async fn graphql_options() -> impl IntoResponse {
 async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumResponse<Body> {
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
+    let is_head = method == Method::HEAD;
     let uri = parts.uri.clone();
     let headers = parts.headers;
 
@@ -192,16 +198,17 @@ async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumR
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/json");
 
-    let gql_request = if method == Method::GET {
+    let gql_request = if method == Method::GET || is_head {
         let Some(qs) = uri.query() else {
             return cors_error(
                 StatusCode::BAD_REQUEST,
-                "GET /graphql には query 文字列が必要です",
+                "GET または HEAD の /graphql には query 文字列が必要です",
+                is_head,
             );
         };
         match async_graphql::http::parse_query_string(qs) {
             Ok(req) => req,
-            Err(e) => return cors_error(StatusCode::BAD_REQUEST, e.to_string()),
+            Err(e) => return cors_error(StatusCode::BAD_REQUEST, e.to_string(), is_head),
         }
     } else if method == Method::POST {
         let ct = headers
@@ -210,17 +217,17 @@ async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumR
             .map(str::to_owned);
         let bytes = match to_bytes(body, 2 * 1024 * 1024).await {
             Ok(b) => b,
-            Err(e) => return cors_error(StatusCode::BAD_REQUEST, e.to_string()),
+            Err(e) => return cors_error(StatusCode::BAD_REQUEST, e.to_string(), is_head),
         };
         let cursor = AsyncCursor::new(bytes.to_vec());
         match async_graphql::http::receive_body(ct.as_deref(), cursor, MultipartOptions::default())
             .await
         {
             Ok(req) => req,
-            Err(e) => return cors_error(StatusCode::BAD_REQUEST, e.to_string()),
+            Err(e) => return cors_error(StatusCode::BAD_REQUEST, e.to_string(), is_head),
         }
     } else {
-        return cors_error(StatusCode::METHOD_NOT_ALLOWED, "GET または POST のみ");
+        return cors_error(StatusCode::METHOD_NOT_ALLOWED, "GET, HEAD または POST のみ", is_head);
     };
 
     let schema = state.schema.clone();
@@ -230,13 +237,27 @@ async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumR
             return cors_error(
                 StatusCode::NOT_ACCEPTABLE,
                 "サブスクリプションは Accept: multipart/mixed; boundary=\"graphql\"; subscriptionSpec=\"1.0\" が必要です",
+                is_head,
+            );
+        }
+
+        if is_head {
+            return apply_cors(
+                AxumResponse::builder()
+                    .status(StatusCode::OK)
+                    .header(
+                        header::CONTENT_TYPE,
+                        "multipart/mixed; boundary=\"graphql\"; subscriptionSpec=\"1.0\"",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
             );
         }
 
         let gql_stream = schema.execute_stream(gql_request);
         let heartbeat = stream::empty::<()>();
         let bytes_stream = create_multipart_mixed_stream(gql_stream, heartbeat);
-        let try_stream = bytes_stream.map(|chunk| Ok::<_, Infallible>(chunk));
+        let try_stream = bytes_stream.map(Ok::<_, Infallible>);
         let body = Body::from_stream(try_stream);
         return apply_cors(
             AxumResponse::builder()
@@ -253,15 +274,16 @@ async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumR
     let gql_response = schema.execute(gql_request).await;
     let json = match serde_json::to_vec(&gql_response) {
         Ok(json) => json,
-        Err(e) => return cors_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => return cors_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), is_head),
     };
-    apply_cors(
-        AxumResponse::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(json))
-            .unwrap(),
-    )
+    let mut builder = AxumResponse::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json");
+    if is_head {
+        builder = builder.header(header::CONTENT_LENGTH, json.len());
+    }
+    let res_body = if is_head { Body::empty() } else { Body::from(json) };
+    apply_cors(builder.body(res_body).unwrap())
 }
 
 async fn playground() -> impl IntoResponse {
