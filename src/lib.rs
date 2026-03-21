@@ -186,6 +186,16 @@ async fn graphql_options() -> impl IntoResponse {
     )
 }
 
+/// `/graphql` にパスは一致するがメソッドが GET / HEAD / POST / OPTIONS 以外のとき。
+/// Axum の既定 405 には CORS が付かないため、ブラウザのクロスオリジンで失敗しうる。
+async fn graphql_method_not_allowed() -> AxumResponse<Body> {
+    cors_error(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "GET, HEAD または POST のみ",
+        false,
+    )
+}
+
 async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumResponse<Body> {
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
@@ -227,7 +237,9 @@ async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumR
             Err(e) => return cors_error(StatusCode::BAD_REQUEST, e.to_string(), is_head),
         }
     } else {
-        return cors_error(StatusCode::METHOD_NOT_ALLOWED, "GET, HEAD または POST のみ", is_head);
+        // GET / HEAD / POST 以外はルートに載せていないため通常ここへは来ない。
+        // 未対応メソッドは `method_not_allowed_fallback` で CORS 付き 405 を返す。
+        unreachable!("graphql は GET/HEAD/POST のみルーティングされる")
     };
 
     let schema = state.schema.clone();
@@ -317,12 +329,16 @@ async fn fetch(req: HttpRequest, _env: Env, _ctx: worker::Context) -> Result<htt
         schema: app_schema(),
     };
 
-    let mut router: Router = Router::new()
-        .route("/", get(playground))
+    let graphql_router = Router::new()
         .route(
-            "/graphql",
+            "/",
             get(graphql).post(graphql).options(graphql_options),
         )
+        .method_not_allowed_fallback(graphql_method_not_allowed);
+
+    let mut router: Router = Router::new()
+        .route("/", get(playground))
+        .nest("/graphql", graphql_router)
         .with_state(state);
 
     let axum_req = req.map(Body::new);
