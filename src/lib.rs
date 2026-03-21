@@ -227,20 +227,9 @@ async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumR
 
     if operation_is_subscription(&gql_request) {
         if !is_accept_multipart_mixed(accept) {
-            let err = async_graphql::Response::from_errors(vec![async_graphql::ServerError::new(
+            return cors_error(
+                StatusCode::OK,
                 "サブスクリプションは Accept: multipart/mixed; boundary=\"graphql\"; subscriptionSpec=\"1.0\" が必要です",
-                None,
-            )]);
-            let json = match serde_json::to_vec(&err) {
-                Ok(json) => json,
-                Err(e) => return cors_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            };
-            return apply_cors(
-                AxumResponse::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(json))
-                    .unwrap(),
             );
         }
 
