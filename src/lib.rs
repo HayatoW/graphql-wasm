@@ -140,6 +140,25 @@ fn operation_is_subscription(request: &GqlRequest) -> bool {
     }
 }
 
+/// GraphQL over HTTP: GET/HEAD は query のみ。mutation / subscription は CSRF 等のリスクのため拒否する。
+fn operation_allowed_on_get(request: &GqlRequest) -> bool {
+    let Ok(doc) = async_graphql_parser::parse_query(&request.query) else {
+        return true;
+    };
+    match &doc.operations {
+        DocumentOperations::Single(op) => op.node.ty == OperationType::Query,
+        DocumentOperations::Multiple(map) => {
+            let Some(name) = &request.operation_name else {
+                return false;
+            };
+            let key = Name::new(name);
+            map.get(&key)
+                .map(|op| op.node.ty == OperationType::Query)
+                .unwrap_or(false)
+        }
+    }
+}
+
 fn apply_cors<B>(mut res: AxumResponse<B>) -> AxumResponse<B> {
     res.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
@@ -230,6 +249,14 @@ async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumR
         return cors_error(StatusCode::METHOD_NOT_ALLOWED, "GET, HEAD または POST のみ", is_head);
     };
 
+    if (method == Method::GET || is_head) && !operation_allowed_on_get(&gql_request) {
+        return cors_error(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "GET または HEAD では query 操作のみ許可されます。mutation と subscription は POST を使用してください。",
+            is_head,
+        );
+    }
+
     let schema = state.schema.clone();
 
     if operation_is_subscription(&gql_request) {
@@ -292,7 +319,7 @@ async fn playground() -> impl IntoResponse {
 <style>body{font-family:system-ui;margin:2rem;}textarea{width:100%;height:180px;}</style></head>
 <body>
 <h1>ToDo GraphQL (Workers)</h1>
-<p><code>POST /graphql</code> (JSON) または GET (query 文字列)。サブスクリプションは multipart Accept ヘッダが必要です。</p>
+<p><code>POST /graphql</code> (JSON) または GET（query 文字列・query のみ）。mutation / subscription は POST。サブスクリプションは multipart Accept ヘッダが必要です。</p>
 <textarea id="q">{"query":"query { todos { id title done } }"}</textarea><br/>
 <button id="run">実行</button>
 <pre id="out"></pre>
