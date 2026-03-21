@@ -1,9 +1,9 @@
 //! Axum + async-graphql を Cloudflare Workers (WASM) 上で動かす ToDo API。
 //! ストアは Isolate 内のメモリ（本番では D1 / KV 等への置き換えを想定）。
 
-use std::convert::Infallible;
-use std::sync::{Mutex, OnceLock};
-use async_graphql::http::{create_multipart_mixed_stream, is_accept_multipart_mixed, MultipartOptions};
+use async_graphql::http::{
+    create_multipart_mixed_stream, is_accept_multipart_mixed, MultipartOptions,
+};
 use async_graphql::{Context, Object, Request as GqlRequest, Schema, SimpleObject, Subscription};
 use async_graphql_parser::types::{DocumentOperations, OperationType};
 use async_graphql_value::Name;
@@ -17,6 +17,8 @@ use axum::Router;
 use futures_util::io::Cursor as AsyncCursor;
 use futures_util::stream;
 use futures_util::StreamExt;
+use std::convert::Infallible;
+use std::sync::{Mutex, OnceLock};
 use tower_service::Service;
 use worker::{event, Env, HttpRequest, Result};
 
@@ -154,6 +156,22 @@ fn apply_cors<B>(mut res: AxumResponse<B>) -> AxumResponse<B> {
     res
 }
 
+fn cors_error(status: StatusCode, msg: impl Into<String>) -> AxumResponse<Body> {
+    let body = async_graphql::Response::from_errors(vec![async_graphql::ServerError::new(
+        msg.into(),
+        None,
+    )]);
+    let json = serde_json::to_vec(&body)
+        .unwrap_or_else(|_| b"{\"errors\":[{\"message\":\"internal\"}]}".to_vec());
+    apply_cors(
+        AxumResponse::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json))
+            .unwrap(),
+    )
+}
+
 async fn graphql_options() -> impl IntoResponse {
     apply_cors(
         AxumResponse::builder()
@@ -163,10 +181,7 @@ async fn graphql_options() -> impl IntoResponse {
     )
 }
 
-async fn graphql(
-    State(state): State<AppState>,
-    req: AxumRequest<Body>,
-) -> std::result::Result<AxumResponse<Body>, (StatusCode, String)> {
+async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumResponse<Body> {
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
     let uri = parts.uri.clone();
@@ -179,26 +194,33 @@ async fn graphql(
 
     let gql_request = if method == Method::GET {
         let Some(qs) = uri.query() else {
-            return Err((
+            return cors_error(
                 StatusCode::BAD_REQUEST,
-                "GET /graphql には query 文字列が必要です".into(),
-            ));
+                "GET /graphql には query 文字列が必要です",
+            );
         };
-        async_graphql::http::parse_query_string(qs).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+        match async_graphql::http::parse_query_string(qs) {
+            Ok(req) => req,
+            Err(e) => return cors_error(StatusCode::BAD_REQUEST, e.to_string()),
+        }
     } else if method == Method::POST {
         let ct = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let bytes = to_bytes(body, 2 * 1024 * 1024)
-            .await
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        let bytes = match to_bytes(body, 2 * 1024 * 1024).await {
+            Ok(b) => b,
+            Err(e) => return cors_error(StatusCode::BAD_REQUEST, e.to_string()),
+        };
         let cursor = AsyncCursor::new(bytes.to_vec());
-        async_graphql::http::receive_body(ct.as_deref(), cursor, MultipartOptions::default())
+        match async_graphql::http::receive_body(ct.as_deref(), cursor, MultipartOptions::default())
             .await
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+        {
+            Ok(req) => req,
+            Err(e) => return cors_error(StatusCode::BAD_REQUEST, e.to_string()),
+        }
     } else {
-        return Err((StatusCode::METHOD_NOT_ALLOWED, "GET または POST のみ".into()));
+        return cors_error(StatusCode::METHOD_NOT_ALLOWED, "GET または POST のみ");
     };
 
     let schema = state.schema.clone();
@@ -209,14 +231,17 @@ async fn graphql(
                 "サブスクリプションは Accept: multipart/mixed; boundary=\"graphql\"; subscriptionSpec=\"1.0\" が必要です",
                 None,
             )]);
-            let json = serde_json::to_vec(&err).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            return Ok(apply_cors(
+            let json = match serde_json::to_vec(&err) {
+                Ok(json) => json,
+                Err(e) => return cors_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+            };
+            return apply_cors(
                 AxumResponse::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(json))
                     .unwrap(),
-            ));
+            );
         }
 
         let gql_stream = schema.execute_stream(gql_request);
@@ -224,7 +249,7 @@ async fn graphql(
         let bytes_stream = create_multipart_mixed_stream(gql_stream, heartbeat);
         let try_stream = bytes_stream.map(|chunk| Ok::<_, Infallible>(chunk));
         let body = Body::from_stream(try_stream);
-        return Ok(apply_cors(
+        return apply_cors(
             AxumResponse::builder()
                 .status(StatusCode::OK)
                 .header(
@@ -233,18 +258,21 @@ async fn graphql(
                 )
                 .body(body)
                 .unwrap(),
-        ));
+        );
     }
 
     let gql_response = schema.execute(gql_request).await;
-    let json = serde_json::to_vec(&gql_response).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(apply_cors(
+    let json = match serde_json::to_vec(&gql_response) {
+        Ok(json) => json,
+        Err(e) => return cors_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    apply_cors(
         AxumResponse::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(json))
             .unwrap(),
-    ))
+    )
 }
 
 async fn playground() -> impl IntoResponse {
