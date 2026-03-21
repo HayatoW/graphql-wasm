@@ -276,14 +276,14 @@ async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumR
         Ok(json) => json,
         Err(e) => return cors_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), is_head),
     };
+    let mut builder = AxumResponse::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json");
+    if is_head {
+        builder = builder.header(header::CONTENT_LENGTH, json.len());
+    }
     let res_body = if is_head { Body::empty() } else { Body::from(json) };
-    apply_cors(
-        AxumResponse::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(res_body)
-            .unwrap(),
-    )
+    apply_cors(builder.body(res_body).unwrap())
 }
 
 async fn playground() -> impl IntoResponse {
