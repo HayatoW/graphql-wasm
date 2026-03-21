@@ -49,7 +49,13 @@ impl MutationRoot {
     async fn create_todo(&self, ctx: &Context<'_>, title: String) -> Todo {
         let store = ctx.data::<TodoStore>().expect("TodoStore");
         let mut g = store.lock().expect("lock");
-        let id = g.iter().map(|t| t.id).max().unwrap_or(0).checked_add(1).expect("ID overflow");
+        let id = g
+            .iter()
+            .map(|t| t.id)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .expect("ID overflow");
         let todo = Todo {
             id,
             title,
@@ -175,7 +181,11 @@ fn apply_cors<B>(mut res: AxumResponse<B>) -> AxumResponse<B> {
     res
 }
 
-fn cors_error(status: StatusCode, msg: impl Into<String>, head_request: bool) -> AxumResponse<Body> {
+fn cors_error(
+    status: StatusCode,
+    msg: impl Into<String>,
+    head_request: bool,
+) -> AxumResponse<Body> {
     let body = if head_request {
         Body::empty()
     } else {
@@ -321,7 +331,11 @@ async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumR
     if is_head {
         builder = builder.header(header::CONTENT_LENGTH, json.len());
     }
-    let res_body = if is_head { Body::empty() } else { Body::from(json) };
+    let res_body = if is_head {
+        Body::empty()
+    } else {
+        Body::from(json)
+    };
     apply_cors(builder.body(res_body).unwrap())
 }
 
@@ -331,7 +345,7 @@ async fn playground() -> impl IntoResponse {
 <style>body{font-family:system-ui;margin:2rem;}textarea{width:100%;height:180px;}</style></head>
 <body>
 <h1>ToDo GraphQL (Workers)</h1>
-<p><code>POST /graphql</code> (JSON) または GET（query 文字列・query のみ）。mutation / subscription は POST。サブスクリプションは multipart Accept ヘッダが必要です。</p>
+<p><code>POST /graphql</code> (JSON) または GET (query 文字列・query のみ)。mutation / subscription は POST。サブスクリプションは multipart Accept ヘッダが必要です。</p>
 <textarea id="q">{"query":"query { todos { id title done } }"}</textarea><br/>
 <button id="run">実行</button>
 <pre id="out"></pre>
@@ -357,10 +371,7 @@ async fn fetch(req: HttpRequest, _env: Env, _ctx: worker::Context) -> Result<htt
     };
 
     let graphql_router = Router::new()
-        .route(
-            "/",
-            get(graphql).post(graphql).options(graphql_options),
-        )
+        .route("/", get(graphql).post(graphql).options(graphql_options))
         .method_not_allowed_fallback(graphql_method_not_allowed);
 
     let mut router: Router = Router::new()
