@@ -1,0 +1,7 @@
+{
+    "[rust]": {
+        "editor.formatOnSave": true
+    },
+    "rust-analyzer.check.command": "check",
+    "rust-analyzer.checkOnSave": true,
+}

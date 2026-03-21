@@ -2,7 +2,7 @@
 name = "todo-graphql-worker"
 version = "0.1.0"
 edition = "2021"
-description = "Cloudflare Workers 上の Axum + async-graphql ToDo API（WASM）"
+description = "Cloudflare Workers 上の Axum + async-graphql ToDo API (WASM)"
 
 [lib]
 crate-type = ["cdylib"]

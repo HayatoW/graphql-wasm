@@ -1,5 +1,5 @@
 //! Axum + async-graphql を Cloudflare Workers (WASM) 上で動かす ToDo API。
-//! ストアは Isolate 内のメモリ（本番では D1 / KV 等への置き換えを想定）。
+//! ストアは Isolate 内のメモリ (本番では D1 / KV 等への置き換えを想定)。
 
 use async_graphql::http::{
     create_multipart_mixed_stream, is_accept_multipart_mixed, MultipartOptions,
@@ -22,7 +22,7 @@ use std::sync::{Mutex, OnceLock};
 use tower_service::Service;
 use worker::{event, Env, HttpRequest, Result};
 
-/// アプリ全体で共有する ToDo ストア（Worker Isolate 単位）。
+/// アプリ全体で共有する ToDo ストア (Worker Isolate 単位)。
 type TodoStore = std::sync::Arc<Mutex<Vec<Todo>>>;
 
 #[derive(Clone, SimpleObject)]
@@ -83,7 +83,7 @@ struct SubscriptionRoot;
 
 #[Subscription]
 impl SubscriptionRoot {
-    /// 定期的に現在の ToDo 一覧をプッシュ（multipart サブスクリプション経由で利用）。
+    /// 定期的に現在の ToDo 一覧をプッシュ (multipart サブスクリプション経由で利用)。
     /// `impl Stream + Send` だと derive が最後の `Send` だけを拾う既知の挙動があるため、具象型で返す。
     async fn todo_list_updates(
         &self,
@@ -270,7 +270,7 @@ async fn playground() -> impl IntoResponse {
 <style>body{font-family:system-ui;margin:2rem;}textarea{width:100%;height:180px;}</style></head>
 <body>
 <h1>ToDo GraphQL (Workers)</h1>
-<p><code>POST /graphql</code>（JSON）または GET（query 文字列）。サブスクリプションは multipart Accept ヘッダが必要です。</p>
+<p><code>POST /graphql</code> (JSON) または GET (query 文字列)。サブスクリプションは multipart Accept ヘッダが必要です。</p>
 <textarea id="q">{"query":"query { todos { id title done } }"}</textarea><br/>
 <button id="run">実行</button>
 <pre id="out"></pre>
