@@ -49,7 +49,7 @@ impl MutationRoot {
     async fn create_todo(&self, ctx: &Context<'_>, title: String) -> Todo {
         let store = ctx.data::<TodoStore>().expect("TodoStore");
         let mut g = store.lock().expect("lock");
-        let id = g.iter().map(|t| t.id).max().unwrap_or(0).saturating_add(1);
+        let id = g.iter().map(|t| t.id).max().unwrap_or(0).checked_add(1).expect("ID overflow");
         let todo = Todo {
             id,
             title,
