@@ -81,9 +81,8 @@ GitHub Actions (`.github/workflows/ci.yml`) で以下を実行します。
 
 | ジョブ | トリガー | 内容 |
 |--------|----------|------|
-| `check` | PR / `main` への push | `cargo fmt --check`、`cargo clippy` (wasm32 / ホスト)、`cargo test` |
-| `build` | PR / `main` への push | `Cargo.lock` の `worker` と同じバージョンの `worker-build` で `wrangler deploy --dry-run` |
-| `deploy` | `main` への push (`check` と `build` 成功後) | `wrangler deploy` で本番 Worker にデプロイ |
+| `check` | PR / `main` への push | `cargo fmt --check`、`cargo clippy` (wasm32)、`cargo test` |
+| `build` | PR / `main` への push (`check` 成功後) | `Cargo.lock` の `worker` と同じバージョンの `worker-build` でビルド。PR では `wrangler deploy --dry-run`、`main` では `wrangler deploy` で本番 Worker にデプロイ (`production` Environment) |
 
 PR ごとの [Workers Preview](https://developers.cloudflare.com/workers/previews/) は `.github/workflows/preview.yml` で扱います。
 
@@ -94,7 +93,7 @@ PR ごとの [Workers Preview](https://developers.cloudflare.com/workers/preview
 
 Preview の設定は `wrangler.toml` の `previews` ブロックに書きます (今はバインディングがないので空です)。フォークからの PR では Cloudflare の認証情報を渡さないため、Preview は作成されません。
 
-デプロイと Preview には、リポジトリの Secrets に以下を設定してください。未設定の場合 `deploy` / `preview` はスキップされます。
+デプロイと Preview には、リポジトリの Secrets に以下を設定してください。未設定の場合、`main` へのデプロイは失敗し、`preview` はスキップされます。
 
 - `CLOUDFLARE_API_TOKEN`: 「Edit Cloudflare Workers」テンプレートで作成した API トークン
 - `CLOUDFLARE_ACCOUNT_ID`: Cloudflare のアカウント ID
