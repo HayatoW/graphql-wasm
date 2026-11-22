@@ -38,6 +38,21 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'production' || '' }}
     steps:
+      - name: Check Cloudflare production credentials
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=0
+          for secret in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            if [ -z "${!secret}" ]; then
+              echo "::error::$secret is missing. Set it in Settings > Environments > production > Environment secrets."
+              missing=1
+            fi
+          done
+          exit "$missing"
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2

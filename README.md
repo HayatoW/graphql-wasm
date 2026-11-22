@@ -84,6 +84,17 @@ GitHub Actions (`.github/workflows/ci.yml`) で以下を実行します。
 | `check` | PR / `main` への push | `cargo fmt --check`、`cargo clippy` (wasm32)、`cargo test` |
 | `build` | PR / `main` への push (`check` 成功後) | `Cargo.lock` の `worker` と同じバージョンの `worker-build` でビルド。PR では `wrangler deploy --dry-run`、`main` では `wrangler deploy` で本番 Worker にデプロイ (`production` Environment) |
 
+### 本番デプロイの初期設定
+
+1. Cloudflare で [API トークンを作成](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)します。`Edit Cloudflare Workers` テンプレートを使い、対象をデプロイ先のアカウントに限定します。
+2. GitHub の [Settings → Environments](https://github.com/HayatoW/graphql-wasm/settings/environments) → `production` → **Environment secrets** に以下を登録します。
+   - `CLOUDFLARE_API_TOKEN`: 作成した API トークン
+   - `CLOUDFLARE_ACCOUNT_ID`: デプロイ先の [Cloudflare アカウント ID](https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/)
+
+次回の `main` へのマージで `graphql-wasm` Worker にデプロイされます。Secrets が未設定の場合、ジョブはビルド前に不足している名前を表示して失敗します。設定不足で失敗した実行のコミットがまだ `main` の最新であれば、[CI の実行履歴](https://github.com/HayatoW/graphql-wasm/actions/workflows/ci.yml)から失敗したジョブを再実行できます。
+
+### PR Preview
+
 PR ごとの [Workers Preview](https://developers.cloudflare.com/workers/previews/) は `.github/workflows/preview.yml` で扱います。
 
 | ジョブ | トリガー | 内容 |
@@ -93,12 +104,9 @@ PR ごとの [Workers Preview](https://developers.cloudflare.com/workers/preview
 
 Preview の設定は `wrangler.toml` の `previews` ブロックに書きます (今はバインディングがないので空です)。フォークからの PR では Cloudflare の認証情報を渡さないため、Preview は作成されません。
 
-デプロイと Preview には、リポジトリの Secrets に以下を設定してください。未設定の場合、`main` へのデプロイは失敗し、`preview` はスキップされます。
+Preview も使う場合は、`CLOUDFLARE_API_TOKEN` と `CLOUDFLARE_ACCOUNT_ID` を [リポジトリの Actions Secrets](https://github.com/HayatoW/graphql-wasm/settings/secrets/actions) にも設定します。`production` の Environment secrets は Preview には渡りません。リポジトリにトークンを設定しない場合、Preview はスキップされます。
 
-- `CLOUDFLARE_API_TOKEN`: 「Edit Cloudflare Workers」テンプレートで作成した API トークン
-- `CLOUDFLARE_ACCOUNT_ID`: Cloudflare のアカウント ID
-
-ローカルで CI と同じチェックを行うには:
+### ローカルでの確認
 
 ```bash
 cargo fmt --all --check
