@@ -1,0 +1,102 @@
+name: Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  PREVIEW_NAME: pr-${{ github.event.pull_request.number }}
+
+jobs:
+  # secrets はジョブの if で参照できないため、有無だけを出力するジョブで判定する
+  creds:
+    name: check Cloudflare credentials
+    # フォークからの PR には Cloudflare の認証情報を渡さない
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      ok: ${{ steps.check.outputs.ok }}
+    steps:
+      - id: check
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::notice::CLOUDFLARE_API_TOKEN が未設定のため Preview をスキップします"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  preview:
+    name: deploy Workers Preview
+    needs: creds
+    if: github.event.action != 'closed' && needs.creds.outputs.ok == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-worker-build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - id: preview
+        name: Create or update Preview
+        # [build] の worker-build のログは標準出力に混ざるため、URL は Wrangler の出力ファイルから読む
+        run: |
+          npx wrangler preview --name "$PREVIEW_NAME" --message "${HEAD_SHA::7}"
+          preview_url="$(jq -er 'select(.type == "preview") | .preview_urls[0]' "$WRANGLER_OUTPUT_FILE_PATH")"
+          echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
+      - name: Probe Preview
+        # 作成直後は応答しないことがあるためリトライする
+        run: |
+          curl --fail --show-error --silent \
+            --retry 5 --retry-delay 3 --retry-all-errors \
+            -X POST "$PREVIEW_URL/graphql" \
+            -H 'Content-Type: application/json' \
+            -d '{"query":"{ todos { id } }"}'
+        env:
+          PREVIEW_URL: ${{ steps.preview.outputs.preview_url }}
+      - name: Comment Preview URL
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" --edit-last --create-if-none \
+            --body "Workers Preview (\`${HEAD_SHA::7}\`): $PREVIEW_URL"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PREVIEW_URL: ${{ steps.preview.outputs.preview_url }}
+
+  cleanup:
+    name: delete Workers Preview
+    needs: creds
+    if: github.event.action == 'closed' && needs.creds.outputs.ok == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Delete Preview
+        run: npx wrangler preview delete --name "$PREVIEW_NAME" --skip-confirmation
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

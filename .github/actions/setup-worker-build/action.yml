@@ -1,0 +1,11 @@
+name: Setup worker-build
+description: Cargo.lock の worker クレートと同じバージョンの worker-build をインストールする
+runs:
+  using: composite
+  steps:
+    - id: version
+      shell: bash
+      run: echo "worker=$(cargo pkgid --locked worker | sed 's/.*@//')" >> "$GITHUB_OUTPUT"
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: worker-build@${{ steps.version.outputs.worker }}

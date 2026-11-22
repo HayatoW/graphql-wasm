@@ -75,6 +75,38 @@ dev container でやる場合は以下を確認
 - https://developers.cloudflare.com/workers/wrangler/commands/general/#use-wrangler-login-on-a-remote-machine
 
 
+## CI/CD
+
+GitHub Actions (`.github/workflows/ci.yml`) で以下を実行します。
+
+| ジョブ | トリガー | 内容 |
+|--------|----------|------|
+| `check` | PR / `main` への push | `cargo fmt --check`、`cargo clippy` (wasm32)、`cargo test` |
+| `build` | PR / `main` への push (`check` 成功後) | `Cargo.lock` の `worker` と同じバージョンの `worker-build` でビルド。PR では `wrangler deploy --dry-run`、`main` では `wrangler deploy` で本番 Worker にデプロイ (`production` Environment) |
+
+PR ごとの [Workers Preview](https://developers.cloudflare.com/workers/previews/) は `.github/workflows/preview.yml` で扱います。
+
+| ジョブ | トリガー | 内容 |
+|--------|----------|------|
+| `preview` | PR の作成 / 更新 | `wrangler preview --name pr-<番号>` で Preview を作成・更新し、`/graphql` への疎通を確認したうえで、Preview URL を PR にコメント |
+| `cleanup` | PR のクローズ | `wrangler preview delete` で Preview を削除 |
+
+Preview の設定は `wrangler.toml` の `previews` ブロックに書きます (今はバインディングがないので空です)。フォークからの PR では Cloudflare の認証情報を渡さないため、Preview は作成されません。
+
+デプロイと Preview には、リポジトリの Secrets に以下を設定してください。未設定の場合、`main` へのデプロイは失敗し、`preview` はスキップされます。
+
+- `CLOUDFLARE_API_TOKEN`: 「Edit Cloudflare Workers」テンプレートで作成した API トークン
+- `CLOUDFLARE_ACCOUNT_ID`: Cloudflare のアカウント ID
+
+ローカルで CI と同じチェックを行うには:
+
+```bash
+cargo fmt --all --check
+cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings
+cargo test
+npx wrangler deploy --dry-run --outdir dist
+```
+
 ## Wrangler の警告について
 
 Wrangler 4 では `[build.upload]` が非推奨扱いの場合があり、設定警告が出ることがあります。`wrangler dev` / デプロイは動作することを確認済みです。公式テンプレートに合わせて `[rules]` 等へ移行する場合は [Wrangler の設定ドキュメント](https://developers.cloudflare.com/workers/wrangler/configuration/) を参照してください。
