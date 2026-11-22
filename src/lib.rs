@@ -23,6 +23,12 @@ use worker::{event, Env, HttpRequest, Result};
 /// アプリ全体で共有する ToDo ストア (Worker Isolate 単位)。
 type TodoStore = std::sync::Arc<Mutex<Vec<Todo>>>;
 
+fn lock_todos(store: &TodoStore) -> async_graphql::Result<std::sync::MutexGuard<'_, Vec<Todo>>> {
+    store
+        .lock()
+        .map_err(|_| async_graphql::Error::new("Todo store is unavailable"))
+}
+
 #[derive(Clone, SimpleObject)]
 struct Todo {
     id: u32,
@@ -34,9 +40,8 @@ struct QueryRoot;
 
 #[Object]
 impl QueryRoot {
-    async fn todos(&self, ctx: &Context<'_>) -> Vec<Todo> {
-        let store = ctx.data::<TodoStore>().expect("TodoStore");
-        store.lock().expect("lock").clone()
+    async fn todos(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Todo>> {
+        Ok(lock_todos(ctx.data::<TodoStore>()?)?.clone())
     }
 }
 
@@ -44,28 +49,26 @@ struct MutationRoot;
 
 #[Object]
 impl MutationRoot {
-    async fn create_todo(&self, ctx: &Context<'_>, title: String) -> Todo {
-        let store = ctx.data::<TodoStore>().expect("TodoStore");
-        let mut g = store.lock().expect("lock");
+    async fn create_todo(&self, ctx: &Context<'_>, title: String) -> async_graphql::Result<Todo> {
+        let mut g = lock_todos(ctx.data::<TodoStore>()?)?;
         let id = g
             .iter()
             .map(|t| t.id)
             .max()
             .unwrap_or(0)
             .checked_add(1)
-            .expect("ID overflow");
+            .ok_or_else(|| async_graphql::Error::new("Todo ID space is exhausted"))?;
         let todo = Todo {
             id,
             title,
             done: false,
         };
         g.push(todo.clone());
-        todo
+        Ok(todo)
     }
 
     async fn toggle_todo(&self, ctx: &Context<'_>, id: u32) -> async_graphql::Result<Todo> {
-        let store = ctx.data::<TodoStore>().expect("TodoStore");
-        let mut g = store.lock().expect("lock");
+        let mut g = lock_todos(ctx.data::<TodoStore>()?)?;
         let t = g
             .iter_mut()
             .find(|t| t.id == id)
@@ -74,12 +77,11 @@ impl MutationRoot {
         Ok(t.clone())
     }
 
-    async fn delete_todo(&self, ctx: &Context<'_>, id: u32) -> bool {
-        let store = ctx.data::<TodoStore>().expect("TodoStore");
-        let mut g = store.lock().expect("lock");
+    async fn delete_todo(&self, ctx: &Context<'_>, id: u32) -> async_graphql::Result<bool> {
+        let mut g = lock_todos(ctx.data::<TodoStore>()?)?;
         let len = g.len();
         g.retain(|t| t.id != id);
-        g.len() < len
+        Ok(g.len() < len)
     }
 }
 
@@ -93,10 +95,10 @@ impl SubscriptionRoot {
         &self,
         ctx: &Context<'_>,
     ) -> async_graphql::Result<stream::Iter<std::vec::IntoIter<Vec<Todo>>>> {
-        let store = ctx.data::<TodoStore>().expect("TodoStore").clone();
+        let store = ctx.data::<TodoStore>()?;
         let snapshots: Vec<Vec<Todo>> = (0..8)
-            .map(|_| store.lock().expect("lock").clone())
-            .collect();
+            .map(|_| Ok(lock_todos(store)?.clone()))
+            .collect::<async_graphql::Result<_>>()?;
         Ok(stream::iter(snapshots))
     }
 }
@@ -433,6 +435,74 @@ mod tests {
         let (status, _, body) = send(router, req);
         assert_eq!(status, StatusCode::OK, "{body}");
         serde_json::from_str(&body).unwrap()
+    }
+
+    #[test]
+    fn poisoned_store_returns_graphql_errors() {
+        let store = TodoStore::default();
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = store.lock().unwrap();
+            panic!("poison store");
+        });
+        let schema = build_schema(store);
+        for query in [
+            "{ todos { id } }",
+            r#"mutation { createTodo(title: "Rust") { id } }"#,
+            "mutation { toggleTodo(id: 1) { id } }",
+            "mutation { deleteTodo(id: 1) }",
+        ] {
+            let response = block_on(schema.execute(query));
+            assert_eq!(response.errors.len(), 1);
+            assert_eq!(response.errors[0].message, "Todo store is unavailable");
+        }
+        let responses = block_on(
+            schema
+                .execute_stream("subscription { todoListUpdates { id } }")
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].errors[0].message, "Todo store is unavailable");
+    }
+
+    #[test]
+    fn exhausted_ids_return_error_without_poisoning_store() {
+        let store = TodoStore::default();
+        store.lock().unwrap().push(Todo {
+            id: u32::MAX,
+            title: "Last".into(),
+            done: false,
+        });
+        let schema = build_schema(store.clone());
+        let response =
+            block_on(schema.execute(r#"mutation { createTodo(title: "Overflow") { id } }"#));
+        assert_eq!(response.errors.len(), 1);
+        assert_eq!(response.errors[0].message, "Todo ID space is exhausted");
+        assert_eq!(store.lock().unwrap().len(), 1);
+        assert!(block_on(schema.execute("{ todos { title } }"))
+            .errors
+            .is_empty());
+    }
+
+    #[test]
+    fn empty_store_and_invalid_ids() {
+        let mut router = test_app();
+        assert_eq!(
+            post(&mut router, "{ todos { id } }")["data"]["todos"],
+            json!([])
+        );
+        assert_eq!(
+            post(&mut router, "mutation { deleteTodo(id: 1) }")["data"]["deleteTodo"],
+            json!(false)
+        );
+        for id in ["-1", "4294967296"] {
+            let response = post(
+                &mut router,
+                &format!("mutation {{ toggleTodo(id: {id}) {{ id }} }}"),
+            );
+            assert!(response["errors"]
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty()));
+        }
     }
 
     #[test]
