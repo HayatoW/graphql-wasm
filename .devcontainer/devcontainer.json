@@ -23,7 +23,7 @@
 	// "forwardPorts": [],
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	"postCreateCommand": "rustup toolchain install 1.88.0 && rustup target add wasm32-unknown-unknown --toolchain 1.88.0 && rustup component add --toolchain 1.88.0-aarch64-unknown-linux-gnu rustfmt"
+	"postCreateCommand": "rustup toolchain install 1.91.0 && rustup target add wasm32-unknown-unknown --toolchain 1.91.0 && rustup component add --toolchain 1.91.0-aarch64-unknown-linux-gnu rustfmt"
 
 	// Configure tool-specific properties.
 	// "customizations": {},

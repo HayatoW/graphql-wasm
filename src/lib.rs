@@ -1,9 +1,7 @@
 //! Axum + async-graphql を Cloudflare Workers (WASM) 上で動かす ToDo API。
 //! ストアは Isolate 内のメモリ (本番では D1 / KV 等への置き換えを想定)。
 
-use async_graphql::http::{
-    create_multipart_mixed_stream, is_accept_multipart_mixed, MultipartOptions,
-};
+use async_graphql::http::{is_accept_multipart_mixed, MultipartOptions};
 use async_graphql::{Context, Object, Request as GqlRequest, Schema, SimpleObject, Subscription};
 use async_graphql_parser::types::{DocumentOperations, OperationType};
 use async_graphql_value::Name;
@@ -15,7 +13,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use futures_util::io::Cursor as AsyncCursor;
-use futures_util::stream;
+use futures_util::stream::{self, Stream};
 use futures_util::StreamExt;
 use std::convert::Infallible;
 use std::sync::{Mutex, OnceLock};
@@ -112,15 +110,15 @@ fn todo_store() -> TodoStore {
         .clone()
 }
 
+fn build_schema(store: TodoStore) -> AppSchema {
+    Schema::build(QueryRoot, MutationRoot, SubscriptionRoot)
+        .data(store)
+        .finish()
+}
+
 fn app_schema() -> AppSchema {
     static SCHEMA: OnceLock<AppSchema> = OnceLock::new();
-    SCHEMA
-        .get_or_init(|| {
-            Schema::build(QueryRoot, MutationRoot, SubscriptionRoot)
-                .data(todo_store())
-                .finish()
-        })
-        .clone()
+    SCHEMA.get_or_init(|| build_schema(todo_store())).clone()
 }
 
 #[derive(Clone)]
@@ -163,6 +161,26 @@ fn operation_allowed_on_get(request: &GqlRequest) -> bool {
                 .unwrap_or(false)
         }
     }
+}
+
+const MULTIPART_CONTENT_TYPE: &str =
+    "multipart/mixed; boundary=\"graphql\"; subscriptionSpec=\"1.0\"";
+
+/// Apollo multipart サブスクリプションプロトコルで GraphQL レスポンスを符号化する。
+/// `async_graphql::http::create_multipart_mixed_stream` は wasm32 でハートビート用タイマーが
+/// `unimplemented!()` のため使わない。
+fn multipart_mixed_stream(
+    input: impl Stream<Item = async_graphql::Response>,
+) -> impl Stream<Item = Vec<u8>> {
+    input
+        .filter_map(|resp| async move { serde_json::to_vec(&resp).ok() })
+        .map(|json| {
+            let mut part = b"--graphql\r\nContent-Type: application/json\r\n\r\n".to_vec();
+            part.extend_from_slice(&json);
+            part.extend_from_slice(b"\r\n");
+            part
+        })
+        .chain(stream::once(async { b"--graphql--\r\n".to_vec() }))
 }
 
 fn apply_cors<B>(mut res: AxumResponse<B>) -> AxumResponse<B> {
@@ -294,27 +312,19 @@ async fn graphql(State(state): State<AppState>, req: AxumRequest<Body>) -> AxumR
             return apply_cors(
                 AxumResponse::builder()
                     .status(StatusCode::OK)
-                    .header(
-                        header::CONTENT_TYPE,
-                        "multipart/mixed; boundary=\"graphql\"; subscriptionSpec=\"1.0\"",
-                    )
+                    .header(header::CONTENT_TYPE, MULTIPART_CONTENT_TYPE)
                     .body(Body::empty())
                     .unwrap(),
             );
         }
 
         let gql_stream = schema.execute_stream(gql_request);
-        let heartbeat = stream::empty::<()>();
-        let bytes_stream = create_multipart_mixed_stream(gql_stream, heartbeat);
-        let try_stream = bytes_stream.map(Ok::<_, Infallible>);
+        let try_stream = multipart_mixed_stream(gql_stream).map(Ok::<_, Infallible>);
         let body = Body::from_stream(try_stream);
         return apply_cors(
             AxumResponse::builder()
                 .status(StatusCode::OK)
-                .header(
-                    header::CONTENT_TYPE,
-                    "multipart/mixed; boundary=\"graphql\"; subscriptionSpec=\"1.0\"",
-                )
+                .header(header::CONTENT_TYPE, MULTIPART_CONTENT_TYPE)
                 .body(body)
                 .unwrap(),
         );
@@ -364,22 +374,156 @@ document.getElementById('run').onclick = async () => {
         .unwrap()
 }
 
-#[event(fetch)]
-async fn fetch(req: HttpRequest, _env: Env, _ctx: worker::Context) -> Result<http::Response<Body>> {
-    let state = AppState {
-        schema: app_schema(),
-    };
-
+fn app(state: AppState) -> Router {
     let graphql_router = Router::new()
         .route("/", get(graphql).post(graphql).options(graphql_options))
         .method_not_allowed_fallback(graphql_method_not_allowed);
 
-    let mut router: Router = Router::new()
+    Router::new()
         .route("/", get(playground))
         .nest("/graphql", graphql_router)
-        .with_state(state);
+        .with_state(state)
+}
 
+#[event(fetch)]
+async fn fetch(req: HttpRequest, _env: Env, _ctx: worker::Context) -> Result<http::Response<Body>> {
+    let mut router = app(AppState {
+        schema: app_schema(),
+    });
     let axum_req = req.map(Body::new);
     let axum_res = router.call(axum_req).await.unwrap();
     Ok(axum_res)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_executor::block_on;
+    use serde_json::{json, Value};
+
+    fn test_app() -> Router {
+        app(AppState {
+            schema: build_schema(TodoStore::default()),
+        })
+    }
+
+    fn send(router: &mut Router, req: AxumRequest<Body>) -> (StatusCode, String, String) {
+        block_on(async {
+            let res = router.call(req).await.unwrap();
+            let status = res.status();
+            let content_type = res
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .map(|v| v.to_str().unwrap().to_owned())
+                .unwrap_or_default();
+            let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            (
+                status,
+                content_type,
+                String::from_utf8(bytes.to_vec()).unwrap(),
+            )
+        })
+    }
+
+    fn post(router: &mut Router, query: &str) -> Value {
+        let req = AxumRequest::post("/graphql")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({ "query": query }).to_string()))
+            .unwrap();
+        let (status, _, body) = send(router, req);
+        assert_eq!(status, StatusCode::OK, "{body}");
+        serde_json::from_str(&body).unwrap()
+    }
+
+    #[test]
+    fn todo_crud() {
+        let mut router = test_app();
+        let created = post(
+            &mut router,
+            r#"mutation { createTodo(title: "Rust") { id title done } }"#,
+        );
+        assert_eq!(
+            created["data"]["createTodo"],
+            json!({ "id": 1, "title": "Rust", "done": false })
+        );
+
+        let toggled = post(&mut router, "mutation { toggleTodo(id: 1) { done } }");
+        assert_eq!(toggled["data"]["toggleTodo"]["done"], json!(true));
+
+        let missing = post(&mut router, "mutation { toggleTodo(id: 99) { done } }");
+        assert_eq!(
+            missing["errors"][0]["message"],
+            json!("Todo が見つかりません")
+        );
+
+        let todos = post(&mut router, "{ todos { id title done } }");
+        assert_eq!(
+            todos["data"]["todos"],
+            json!([{ "id": 1, "title": "Rust", "done": true }])
+        );
+
+        let deleted = post(&mut router, "mutation { deleteTodo(id: 1) }");
+        assert_eq!(deleted["data"]["deleteTodo"], json!(true));
+        let todos = post(&mut router, "{ todos { id } }");
+        assert_eq!(todos["data"]["todos"], json!([]));
+    }
+
+    #[test]
+    fn get_allows_query_only() {
+        let mut router = test_app();
+        let req = AxumRequest::get("/graphql?query=%7B%20todos%20%7B%20id%20%7D%20%7D")
+            .body(Body::empty())
+            .unwrap();
+        let (status, _, body) = send(&mut router, req);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["data"]["todos"],
+            json!([])
+        );
+
+        let req = AxumRequest::get("/graphql?query=mutation%20%7B%20deleteTodo(id%3A%201)%20%7D")
+            .body(Body::empty())
+            .unwrap();
+        let (status, _, _) = send(&mut router, req);
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[test]
+    fn unsupported_method_has_cors() {
+        let mut router = test_app();
+        let req = AxumRequest::put("/graphql").body(Body::empty()).unwrap();
+        let res = block_on(router.call(req)).unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(res.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+    }
+
+    #[test]
+    fn subscription_requires_multipart_accept() {
+        let mut router = test_app();
+        let req = AxumRequest::post("/graphql")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({ "query": "subscription { todoListUpdates { id } }" }).to_string(),
+            ))
+            .unwrap();
+        let (status, _, _) = send(&mut router, req);
+        assert_eq!(status, StatusCode::NOT_ACCEPTABLE);
+    }
+
+    #[test]
+    fn subscription_streams_multipart() {
+        let mut router = test_app();
+        let req = AxumRequest::post("/graphql")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, MULTIPART_CONTENT_TYPE)
+            .body(Body::from(
+                json!({ "query": "subscription { todoListUpdates { id } }" }).to_string(),
+            ))
+            .unwrap();
+        let (status, content_type, body) = send(&mut router, req);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type, MULTIPART_CONTENT_TYPE);
+        let part = "--graphql\r\nContent-Type: application/json\r\n\r\n{\"data\":{\"todoListUpdates\":[]}}\r\n";
+        assert_eq!(body, format!("{}--graphql--\r\n", part.repeat(8)));
+    }
 }

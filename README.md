@@ -4,8 +4,8 @@ Cloudflare Workers にデプロイ可能な **Rust / WASM** の GraphQL API で�
 
 ## 前提
 
-- [Rust](https://www.rust-lang.org/) (`rust-toolchain.toml` どおり **1.88**)
-- `wasm32-unknown-unknown` ターゲット: `rustup target add wasm32-unknown-unknown --toolchain 1.88.0`
+- [Rust](https://www.rust-lang.org/) (`rust-toolchain.toml` どおり **1.91**)
+- `wasm32-unknown-unknown` ターゲット: `rustup target add wasm32-unknown-unknown --toolchain 1.91.0`
 - [worker-build](https://github.com/cloudflare/workers-rs) (`cargo install worker-build`、ビルドには OpenSSL 開発パッケージが必要な場合あり)
 - [Node.js](https://nodejs.org/) + [Wrangler](https://developers.cloudflare.com/workers/wrangler/) (`npx wrangler` で可)
 
