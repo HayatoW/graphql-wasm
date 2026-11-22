@@ -1,5 +1,7 @@
 # graphql-wasm
 
+[![Built by Devin](https://raw.githubusercontent.com/club-cog/built-by-devin/main/badges/built-by-devin.svg)](https://devin.ai)
+
 Cloudflare Workers にデプロイ可能な **Rust / WASM** の GraphQL API です。ルーティングは **Axum** (`default-features = false`、Tokio ランタイム機能なし)、スキーマは **async-graphql** です。
 
 ## 前提
