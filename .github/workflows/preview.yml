@@ -50,17 +50,15 @@ jobs:
       - if: steps.creds.outputs.ok == 'true'
         run: npm ci
       - if: steps.creds.outputs.ok == 'true'
-        # wrangler preview も [build] の worker-build を実行するが、ログが --json の出力に混ざらないよう先にビルドしておく
-        run: worker-build --release
-      - if: steps.creds.outputs.ok == 'true'
         id: preview
         name: Create or update Preview
+        # [build] の worker-build のログは標準出力に混ざるため、URL は Wrangler の出力ファイルから読む
         run: |
-          set -o pipefail
-          output="$(npx wrangler preview --name "$PREVIEW_NAME" --message "${GITHUB_SHA::7}" --json)"
-          printf '%s\n' "$output"
-          preview_url="$(printf '%s' "$output" | jq -er '.preview.urls[0]')"
+          npx wrangler preview --name "$PREVIEW_NAME" --message "${GITHUB_SHA::7}"
+          preview_url="$(jq -er 'select(.type == "preview") | .preview_urls[0]' "$WRANGLER_OUTPUT_FILE_PATH")"
           echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
+        env:
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
       - if: steps.creds.outputs.ok == 'true'
         name: Probe Preview
         run: |
